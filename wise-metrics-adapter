@@ -1,0 +1,665 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+
+class WiseMetricsAdapter:
+    """
+    Extension class to adapt the FinTechForecaster for Wise-specific metrics
+    """
+    
+    def __init__(self, base_forecaster):
+        """Initialize with a reference to the base forecaster"""
+        self.forecaster = base_forecaster
+        self.wise_metrics = {}
+    
+    def generate_wise_sample_data(self, periods=36, freq='M', seed=42):
+        """
+        Generate sample data with Wise-specific metrics
+        
+        Parameters:
+        -----------
+        periods : int, default 36
+            Number of time periods to generate
+        freq : str, default 'M'
+            Frequency of time periods ('D', 'W', 'M', 'Q', 'Y')
+        seed : int, default 42
+            Random seed for reproducibility
+        """
+        # Generate base fintech data first
+        self.forecaster.load_sample_data(periods, freq, seed)
+        data = self.forecaster.data.copy()
+        
+        # Add Wise-specific metrics
+        np.random.seed(seed)
+        
+        # 1. Create date range (already in the base data)
+        date_range = data.index
+        
+        # 2. Money Transfer Volumes by Currency Corridor
+        # Major corridors for Wise
+        corridors = ['GBP-EUR', 'EUR-GBP', 'USD-EUR', 'GBP-USD', 'EUR-USD', 
+                    'AUD-GBP', 'INR-USD', 'USD-INR', 'SGD-USD', 'Other']
+        
+        corridor_volumes = {}
+        corridor_weights = {
+            'GBP-EUR': 0.18, 'EUR-GBP': 0.15, 'USD-EUR': 0.12, 
+            'GBP-USD': 0.14, 'EUR-USD': 0.11, 'AUD-GBP': 0.08, 
+            'INR-USD': 0.06, 'USD-INR': 0.05, 'SGD-USD': 0.04, 'Other': 0.07
+        }
+        
+        # Base volume from transaction volume
+        base_volume = data['TransactionVolume']
+        
+        for corridor, weight in corridor_weights.items():
+            # Create corridor-specific growth and seasonality
+            growth_factor = np.linspace(1, 1 + np.random.uniform(0.3, 0.8), len(date_range))
+            seasonal_factor = 1 + 0.1 * np.sin(np.linspace(0, np.random.uniform(6, 12), len(date_range)))
+            noise_factor = 1 + np.random.normal(0, 0.03, len(date_range))
+            
+            corridor_volumes[f'Volume_{corridor}'] = base_volume * weight * growth_factor * seasonal_factor * noise_factor
+        
+        # 3. Customer Metrics
+        # Active customers (monthly active users)
+        active_customers = np.linspace(500000, 2000000, len(date_range))
+        active_customers = active_customers * (1 + 0.1 * np.sin(np.linspace(0, 8, len(date_range))))  # Seasonality
+        active_customers = active_customers * (1 + np.random.normal(0, 0.02, len(date_range)))  # Noise
+        
+        # New customers acquired per period
+        new_customers = np.linspace(80000, 150000, len(date_range))
+        new_customers = new_customers * (1 + 0.15 * np.sin(np.linspace(0, 10, len(date_range))))  # Seasonality
+        new_customers = new_customers * (1 + np.random.normal(0, 0.05, len(date_range)))  # Noise
+        
+        # Customer acquisition cost (CAC) - already in the base data but let's make it Wise-specific
+        cac = np.linspace(25, 20, len(date_range))  # Decreasing over time (efficiency)
+        cac = cac * (1 + 0.05 * np.sin(np.linspace(0, 8, len(date_range))))  # Seasonality
+        cac = cac * (1 + np.random.normal(0, 0.03, len(date_range)))  # Noise
+        
+        # 4. Fee Structure Metrics
+        # Average fee per transaction
+        avg_fee_percent = np.linspace(0.65, 0.50, len(date_range))  # Decreasing over time due to competition
+        avg_fee_percent = avg_fee_percent * (1 + np.random.normal(0, 0.01, len(date_range)))  # Small noise
+        
+        # Fee income
+        fee_income = base_volume * avg_fee_percent / 100
+        
+        # 5. Multi-Currency Account Metrics
+        # Balances held in multi-currency accounts
+        mca_balances = np.linspace(500000000, 2000000000, len(date_range))
+        mca_balances = mca_balances * (1 + 0.05 * np.sin(np.linspace(0, 6, len(date_range))))  # Seasonality
+        mca_balances = mca_balances * (1 + np.random.normal(0, 0.02, len(date_range)))  # Noise
+        
+        # Interest income from balances (based on average interest rate of ~1-2%)
+        interest_rates = np.linspace(0.01, 0.02, len(date_range))
+        interest_income = mca_balances * interest_rates / 12  # Monthly interest
+        
+        # 6. Product Usage Metrics
+        # Business vs personal usage
+        business_volume_pct = np.linspace(0.25, 0.40, len(date_range))  # Growing business segment
+        business_volume_pct = business_volume_pct * (1 + np.random.normal(0, 0.02, len(date_range)))
+        business_volume = base_volume * business_volume_pct
+        personal_volume = base_volume * (1 - business_volume_pct)
+        
+        # Debit card transactions
+        card_transactions = np.linspace(200000, 1000000, len(date_range))
+        card_transactions = card_transactions * (1 + 0.2 * np.sin(np.linspace(0, 10, len(date_range))))  # Seasonality
+        card_transactions = card_transactions * (1 + np.random.normal(0, 0.05, len(date_range)))  # Noise
+        
+        # 7. Operational Metrics
+        # Cost per transaction
+        cost_per_transaction = np.linspace(0.3, 0.2, len(date_range))  # Decreasing due to scale
+        cost_per_transaction = cost_per_transaction * (1 + np.random.normal(0, 0.02, len(date_range)))
+        
+        # FX hedging costs (as % of volume)
+        hedging_cost_pct = np.linspace(0.08, 0.06, len(date_range))
+        hedging_cost_pct = hedging_cost_pct * (1 + 0.1 * np.sin(np.linspace(0, 8, len(date_range))))  # Seasonality
+        hedging_cost_pct = hedging_cost_pct * (1 + np.random.normal(0, 0.03, len(date_range)))  # Noise
+        hedging_costs = base_volume * hedging_cost_pct / 100
+        
+        # 8. Unit Economics
+        # LTV (Lifetime Value)
+        ltv = np.linspace(150, 200, len(date_range))
+        ltv = ltv * (1 + np.random.normal(0, 0.03, len(date_range)))
+        
+        # LTV:CAC Ratio
+        ltv_cac_ratio = ltv / cac
+        
+        # 9. Calculate Key Growth and Performance Metrics
+        # Take Rate (Revenue as % of Volume)
+        take_rate = fee_income / base_volume * 100
+        
+        # Transaction Cost Ratio (Costs as % of Volume)
+        transaction_cost_ratio = (cost_per_transaction * base_volume) / base_volume * 100
+        
+        # Transfer Margin (Take Rate - Transaction Cost Ratio)
+        transfer_margin = take_rate - transaction_cost_ratio
+        
+        # Add all Wise-specific metrics to the dataframe
+        for corridor, volumes in corridor_volumes.items():
+            data[corridor] = volumes
+            
+        # Add the rest of the metrics
+        data['ActiveCustomers'] = active_customers
+        data['NewCustomers'] = new_customers
+        data['CustomerAcquisitionCost'] = cac
+        data['AvgFeePercent'] = avg_fee_percent
+        data['FeeIncome'] = fee_income
+        data['MCABalances'] = mca_balances
+        data['InterestIncome'] = interest_income
+        data['BusinessVolume'] = business_volume
+        data['PersonalVolume'] = personal_volume
+        data['CardTransactions'] = card_transactions
+        data['CostPerTransaction'] = cost_per_transaction
+        data['HedgingCosts'] = hedging_costs
+        data['LTV'] = ltv
+        data['LTV_CAC_Ratio'] = ltv_cac_ratio
+        data['TakeRate'] = take_rate
+        data['TransactionCostRatio'] = transaction_cost_ratio
+        data['TransferMargin'] = transfer_margin
+        
+        # Total Revenue (Fee Income + Interest Income)
+        data['TotalRevenue'] = data['FeeIncome'] + data['InterestIncome']
+        
+        # Total Costs (Marketing + Operational + Hedging)
+        data['TotalCosts'] = data['MarketingSpend'] + (data['CostPerTransaction'] * data['TransactionVolume']) + data['HedgingCosts']
+        
+        # Gross Profit
+        data['GrossProfit'] = data['TotalRevenue'] - data['TotalCosts']
+        
+        # Gross Margin
+        data['GrossMargin'] = data['GrossProfit'] / data['TotalRevenue'] * 100
+        
+        # Store the results
+        self.forecaster.data = data
+        
+        print(f"Wise-specific metrics generated for {len(data)} {freq} periods.")
+        return data
+    
+    def forecast_corridor_volumes(self, periods=12):
+        """
+        Forecast volume for each currency corridor
+        
+        Parameters:
+        -----------
+        periods : int, default 12
+            Number of periods to forecast
+        """
+        # Get all corridor columns
+        corridor_columns = [col for col in self.forecaster.data.columns if col.startswith('Volume_')]
+        
+        if not corridor_columns:
+            print("No currency corridor data found. Run generate_wise_sample_data first.")
+            return
+        
+        # Forecast each corridor
+        corridor_forecasts = {}
+        
+        for corridor in corridor_columns:
+            print(f"\nForecasting {corridor}:")
+            self.forecaster.forecasting_competition(corridor)
+            forecast = self.forecaster.forecast_future(corridor, periods)
+            corridor_forecasts[corridor] = forecast
+        
+        # Create summary of corridor forecasts
+        summary = pd.DataFrame(index=corridor_forecasts[corridor_columns[0]].index)
+        
+        for corridor in corridor_columns:
+            summary[corridor] = corridor_forecasts[corridor][f'{corridor}_Forecast']
+        
+        # Calculate total volume forecast
+        summary['Total_Volume_Forecast'] = summary.sum(axis=1)
+        
+        # Plot stacked area chart of forecasts
+        import matplotlib.pyplot as plt
+        
+        plt.figure(figsize=(14, 10))
+        
+        # Historical data for context
+        historical = self.forecaster.data[corridor_columns].iloc[-12:]
+        historical_total = historical.sum(axis=1)
+        
+        # Plot historical totals
+        plt.plot(historical_total.index, historical_total, 'k-', linewidth=2, label='Historical Total')
+        
+        # Plot forecast with breakdown
+        plt.stackplot(summary.index, 
+                    [summary[corridor] for corridor in corridor_columns],
+                    labels=corridor_columns,
+                    alpha=0.7)
+        
+        plt.title('Currency Corridor Volume Forecast')
+        plt.xlabel('Date')
+        plt.ylabel('Volume')
+        plt.legend(loc='upper left')
+        plt.grid(True)
+        plt.show()
+        
+        return summary
+    
+    def forecast_unit_economics(self, periods=12):
+        """
+        Forecast unit economics metrics: CAC, LTV, and LTV:CAC ratio
+        
+        Parameters:
+        -----------
+        periods : int, default 12
+            Number of periods to forecast
+        """
+        metrics = ['CustomerAcquisitionCost', 'LTV', 'LTV_CAC_Ratio']
+        
+        # Check if metrics exist
+        available_metrics = [m for m in metrics if m in self.forecaster.data.columns]
+        
+        if not available_metrics:
+            print("Unit economics metrics not found. Run generate_wise_sample_data first.")
+            return
+        
+        # Forecast each metric
+        forecasts = {}
+        
+        for metric in available_metrics:
+            print(f"\nForecasting {metric}:")
+            self.forecaster.forecasting_competition(metric)
+            forecast = self.forecaster.forecast_future(metric, periods)
+            forecasts[metric] = forecast
+        
+        # If we have both CAC and LTV, we can calculate LTV:CAC directly
+        if 'CustomerAcquisitionCost' in forecasts and 'LTV' in forecasts:
+            # Get CAC and LTV forecasts
+            cac_forecast = forecasts['CustomerAcquisitionCost'][f'CustomerAcquisitionCost_Forecast']
+            ltv_forecast = forecasts['LTV'][f'LTV_Forecast']
+            
+            # Calculate LTV:CAC ratio
+            ltv_cac_ratio = ltv_forecast / cac_forecast
+            
+            # Create a new dataframe for the calculated ratio
+            ratio_forecast = pd.DataFrame(index=cac_forecast.index)
+            ratio_forecast['LTV_CAC_Ratio_Calculated'] = ltv_cac_ratio
+            
+            # Add to forecasts
+            forecasts['LTV_CAC_Ratio_Calculated'] = ratio_forecast
+        
+        # Plot the forecasts
+        import matplotlib.pyplot as plt
+        
+        fig, axes = plt.subplots(len(forecasts), 1, figsize=(14, 10), sharex=True)
+        
+        for i, (metric, forecast) in enumerate(forecasts.items()):
+            ax = axes[i] if len(forecasts) > 1 else axes
+            
+            # Get the forecast column name
+            forecast_col = f'{metric}_Forecast' if metric != 'LTV_CAC_Ratio_Calculated' else 'LTV_CAC_Ratio_Calculated'
+            
+            # Plot historical data if available
+            if metric in self.forecaster.data.columns:
+                historical = self.forecaster.data[metric].iloc[-12:]
+                ax.plot(historical.index, historical, 'b-', label='Historical')
+            
+            # Plot forecast
+            ax.plot(forecast.index, forecast[forecast_col], 'r-', label='Forecast')
+            
+            # Add title and legend
+            ax.set_title(f'{metric} Forecast')
+            ax.legend()
+            ax.grid(True)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return forecasts
+    
+    def forecast_revenue_breakdown(self, periods=12):
+        """
+        Forecast revenue breakdown: Fee Income vs Interest Income
+        
+        Parameters:
+        -----------
+        periods : int, default 12
+            Number of periods to forecast
+        """
+        metrics = ['FeeIncome', 'InterestIncome', 'TotalRevenue']
+        
+        # Check if metrics exist
+        available_metrics = [m for m in metrics if m in self.forecaster.data.columns]
+        
+        if not available_metrics:
+            print("Revenue breakdown metrics not found. Run generate_wise_sample_data first.")
+            return
+        
+        # Forecast each metric
+        forecasts = {}
+        
+        for metric in available_metrics:
+            print(f"\nForecasting {metric}:")
+            self.forecaster.forecasting_competition(metric)
+            forecast = self.forecaster.forecast_future(metric, periods)
+            forecasts[metric] = forecast
+        
+        # Create summary of revenue forecasts
+        if 'FeeIncome' in forecasts and 'InterestIncome' in forecasts:
+            summary = pd.DataFrame(index=forecasts['FeeIncome'].index)
+            summary['FeeIncome_Forecast'] = forecasts['FeeIncome']['FeeIncome_Forecast']
+            summary['InterestIncome_Forecast'] = forecasts['InterestIncome']['InterestIncome_Forecast']
+            summary['TotalRevenue_Calculated'] = summary['FeeIncome_Forecast'] + summary['InterestIncome_Forecast']
+            
+            # Compare with direct total revenue forecast if available
+            if 'TotalRevenue' in forecasts:
+                summary['TotalRevenue_Forecast'] = forecasts['TotalRevenue']['TotalRevenue_Forecast']
+        else:
+            summary = None
+        
+        # Plot the forecasts
+        import matplotlib.pyplot as plt
+        
+        plt.figure(figsize=(14, 7))
+        
+        # Plot historical data for context
+        if 'FeeIncome' in self.forecaster.data.columns and 'InterestIncome' in self.forecaster.data.columns:
+            historical_fee = self.forecaster.data['FeeIncome'].iloc[-12:]
+            historical_interest = self.forecaster.data['InterestIncome'].iloc[-12:]
+            
+            plt.bar(historical_fee.index, historical_fee, width=20, color='b', alpha=0.7, label='Historical Fee Income')
+            plt.bar(historical_interest.index, historical_interest, bottom=historical_fee, width=20, color='g', alpha=0.7, label='Historical Interest Income')
+        
+        # Plot forecast
+        if summary is not None:
+            plt.bar(summary.index, summary['FeeIncome_Forecast'], width=20, color='r', alpha=0.7, label='Forecast Fee Income')
+            plt.bar(summary.index, summary['InterestIncome_Forecast'], bottom=summary['FeeIncome_Forecast'], width=20, color='c', alpha=0.7, label='Forecast Interest Income')
+            
+            # Plot total revenue line
+            if 'TotalRevenue_Forecast' in summary.columns:
+                plt.plot(summary.index, summary['TotalRevenue_Forecast'], 'k-', linewidth=2, label='Forecast Total Revenue')
+            else:
+                plt.plot(summary.index, summary['TotalRevenue_Calculated'], 'k-', linewidth=2, label='Calculated Total Revenue')
+        
+        plt.title('Revenue Breakdown Forecast')
+        plt.xlabel('Date')
+        plt.ylabel('Revenue')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+        
+        return summary
+    
+    def forecast_take_rate_and_margin(self, periods=12):
+        """
+        Forecast take rate and transfer margin
+        
+        Parameters:
+        -----------
+        periods : int, default 12
+            Number of periods to forecast
+        """
+        metrics = ['TakeRate', 'TransactionCostRatio', 'TransferMargin']
+        
+        # Check if metrics exist
+        available_metrics = [m for m in metrics if m in self.forecaster.data.columns]
+        
+        if not available_metrics:
+            print("Take rate and margin metrics not found. Run generate_wise_sample_data first.")
+            return
+        
+        # Forecast each metric
+        forecasts = {}
+        
+        for metric in available_metrics:
+            print(f"\nForecasting {metric}:")
+            self.forecaster.forecasting_competition(metric)
+            forecast = self.forecaster.forecast_future(metric, periods)
+            forecasts[metric] = forecast
+        
+        # Calculate transfer margin from forecasts if we have take rate and cost ratio
+        if 'TakeRate' in forecasts and 'TransactionCostRatio' in forecasts:
+            # Get take rate and cost ratio forecasts
+            take_rate_forecast = forecasts['TakeRate']['TakeRate_Forecast']
+            cost_ratio_forecast = forecasts['TransactionCostRatio']['TransactionCostRatio_Forecast']
+            
+            # Calculate transfer margin
+            transfer_margin = take_rate_forecast - cost_ratio_forecast
+            
+            # Create a new dataframe for the calculated margin
+            margin_forecast = pd.DataFrame(index=take_rate_forecast.index)
+            margin_forecast['TransferMargin_Calculated'] = transfer_margin
+            
+            # Add to forecasts
+            forecasts['TransferMargin_Calculated'] = margin_forecast
+        
+        # Plot the forecasts
+        import matplotlib.pyplot as plt
+        
+        plt.figure(figsize=(14, 7))
+        
+        # Historical data for context
+        for metric in available_metrics:
+            if metric in self.forecaster.data.columns:
+                historical = self.forecaster.data[metric].iloc[-12:]
+                plt.plot(historical.index, historical, '--', linewidth=1, label=f'Historical {metric}')
+        
+        # Plot forecasts
+        colors = ['r-', 'g-', 'b-', 'c-', 'm-']
+        i = 0
+        
+        for metric, forecast in forecasts.items():
+            # Get the forecast column name
+            forecast_col = f'{metric}_Forecast' if metric != 'TransferMargin_Calculated' else 'TransferMargin_Calculated'
+            
+            # Plot forecast
+            plt.plot(forecast.index, forecast[forecast_col], colors[i % len(colors)], linewidth=2, label=f'Forecast {metric}')
+            i += 1
+        
+        plt.title('Take Rate and Margin Forecast')
+        plt.xlabel('Date')
+        plt.ylabel('Percentage')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+        
+        return forecasts
+    
+    def forecast_customer_metrics(self, periods=12):
+        """
+        Forecast customer metrics: Active Customers, New Customers, and derived metrics
+        
+        Parameters:
+        -----------
+        periods : int, default 12
+            Number of periods to forecast
+        """
+        metrics = ['ActiveCustomers', 'NewCustomers']
+        
+        # Check if metrics exist
+        available_metrics = [m for m in metrics if m in self.forecaster.data.columns]
+        
+        if not available_metrics:
+            print("Customer metrics not found. Run generate_wise_sample_data first.")
+            return
+        
+        # Forecast each metric
+        forecasts = {}
+        
+        for metric in available_metrics:
+            print(f"\nForecasting {metric}:")
+            self.forecaster.forecasting_competition(metric)
+            forecast = self.forecaster.forecast_future(metric, periods)
+            forecasts[metric] = forecast
+        
+        # Calculate derived metrics
+        if 'ActiveCustomers' in forecasts and 'NewCustomers' in forecasts:
+            # Get forecasts
+            active_forecast = forecasts['ActiveCustomers']['ActiveCustomers_Forecast']
+            new_forecast = forecasts['NewCustomers']['NewCustomers_Forecast']
+            
+            # Calculate customer growth rate
+            summary = pd.DataFrame(index=active_forecast.index)
+            summary['ActiveCustomers_Forecast'] = active_forecast
+            summary['NewCustomers_Forecast'] = new_forecast
+            
+            # Calculate growth rate (month over month)
+            summary['GrowthRate_MoM'] = summary['ActiveCustomers_Forecast'].pct_change() * 100
+            
+            # Calculate customer acquisition rate (new customers as % of active)
+            summary['AcquisitionRate'] = (summary['NewCustomers_Forecast'] / summary['ActiveCustomers_Forecast']) * 100
+        else:
+            summary = None
+        
+        # Plot the forecasts
+        import matplotlib.pyplot as plt
+        
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+        
+        # Plot customer counts on first axis
+        if 'ActiveCustomers' in self.forecaster.data.columns:
+            historical_active = self.forecaster.data['ActiveCustomers'].iloc[-12:]
+            ax1.plot(historical_active.index, historical_active, 'b--', linewidth=1, label='Historical Active Customers')
+        
+        if 'NewCustomers' in self.forecaster.data.columns:
+            historical_new = self.forecaster.data['NewCustomers'].iloc[-12:]
+            ax1.plot(historical_new.index, historical_new, 'g--', linewidth=1, label='Historical New Customers')
+        
+        if summary is not None:
+            ax1.plot(summary.index, summary['ActiveCustomers_Forecast'], 'b-', linewidth=2, label='Forecast Active Customers')
+            ax1.plot(summary.index, summary['NewCustomers_Forecast'], 'g-', linewidth=2, label='Forecast New Customers')
+        
+        ax1.set_title('Customer Metrics Forecast')
+        ax1.set_ylabel('Number of Customers')
+        ax1.legend()
+        ax1.grid(True)
+        
+        # Plot rates on second axis
+        if summary is not None:
+            ax2.plot(summary.index, summary['GrowthRate_MoM'], 'r-', linewidth=2, label='MoM Growth Rate (%)')
+            ax2.plot(summary.index, summary['AcquisitionRate'], 'c-', linewidth=2, label='Acquisition Rate (%)')
+        
+        ax2.set_title('Customer Growth Metrics')
+        ax2.set_xlabel('Date')
+        ax2.set_ylabel('Percentage')
+        ax2.legend()
+        ax2.grid(True)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return summary
+    
+    def run_wise_forecasting_dashboard(self, periods=12):
+        """
+        Run comprehensive forecasting for all Wise-specific metrics
+        
+        Parameters:
+        -----------
+        periods : int, default 12
+            Number of periods to forecast
+        """
+        # Check if we have Wise data
+        wise_columns = ['Volume_GBP-EUR', 'ActiveCustomers', 'TakeRate']
+        if not any(col in self.forecaster.data.columns for col in wise_columns):
+            print("Wise-specific metrics not found. Generating sample data...")
+            self.generate_wise_sample_data()
+        
+        # 1. Forecast corridor volumes
+        print("\n=== Currency Corridor Volumes ===")
+        corridor_forecasts = self.forecast_corridor_volumes(periods)
+        
+        # 2. Forecast unit economics
+        print("\n=== Unit Economics ===")
+        unit_economics_forecasts = self.forecast_unit_economics(periods)
+        
+        # 3. Forecast revenue breakdown
+        print("\n=== Revenue Breakdown ===")
+        revenue_forecasts = self.forecast_revenue_breakdown(periods)
+        
+        # 4. Forecast take rate and margin
+        print("\n=== Take Rate and Margin ===")
+        margin_forecasts = self.forecast_take_rate_and_margin(periods)
+        
+        # 5. Forecast customer metrics
+        print("\n=== Customer Metrics ===")
+        customer_forecasts = self.forecast_customer_metrics(periods)
+        
+        # 6. Create comprehensive dashboard
+        # Use matplotlib to create a dashboard of key metrics
+        import matplotlib.pyplot as plt
+        
+        plt.figure(figsize=(16, 12))
+        plt.suptitle('Wise Financial Metrics Forecast Dashboard', fontsize=16)
+        
+        # 1. Total Volume
+        plt.subplot(3, 2, 1)
+        if corridor_forecasts is not None:
+            plt.plot(corridor_forecasts.index, corridor_forecasts['Total_Volume_Forecast'], 'b-', linewidth=2)
+            plt.title('Total Transfer Volume Forecast')
+            plt.grid(True)
+        
+        # 2. Revenue Breakdown
+        plt.subplot(3, 2, 2)
+        if revenue_forecasts is not None:
+            plt.plot(revenue_forecasts.index, revenue_forecasts['FeeIncome_Forecast'], 'g-', label='Fee Income')
+            plt.plot(revenue_forecasts.index, revenue_forecasts['InterestIncome_Forecast'], 'r-', label='Interest Income')
+            plt.title('Revenue Breakdown Forecast')
+            plt.legend()
+            plt.grid(True)
+        
+        # 3. Take Rate and Margin
+        plt.subplot(3, 2, 3)
+        if margin_forecasts is not None and 'TakeRate' in margin_forecasts:
+            plt.plot(margin_forecasts['TakeRate'].index, margin_forecasts['TakeRate']['TakeRate_Forecast'], 'b-', label='Take Rate')
+            
+            if 'TransferMargin' in margin_forecasts:
+                plt.plot(margin_forecasts['TransferMargin'].index, margin_forecasts['TransferMargin']['TransferMargin_Forecast'], 'g-', label='Transfer Margin')
+            elif 'TransferMargin_Calculated' in margin_forecasts:
+                plt.plot(margin_forecasts['TransferMargin_Calculated'].index, margin_forecasts['TransferMargin_Calculated']['TransferMargin_Calculated'], 'g-', label='Transfer Margin')
+                
+            plt.title('Take Rate and Margin Forecast')
+            plt.legend()
+            plt.grid(True)
+        
+        # 4. Customer Metrics
+        plt.subplot(3, 2, 4)
+        if customer_forecasts is not None:
+            plt.plot(customer_forecasts.index, customer_forecasts['ActiveCustomers_Forecast'], 'b-', label='Active Customers')
+            plt.title('Active Customers Forecast')
+            plt.grid(True)
+        
+        # 5. Unit Economics
+        plt.subplot(3, 2, 5)
+        if unit_economics_forecasts is not None and 'LTV_CAC_Ratio' in unit_economics_forecasts:
+            plt.plot(unit_economics_forecasts['LTV_CAC_Ratio'].index, unit_economics_forecasts['LTV_CAC_Ratio']['LTV_CAC_Ratio_Forecast'], 'r-')
+            plt.title('LTV:CAC Ratio Forecast')
+            plt.grid(True)
+            plt.axhline(y=3, color='g', linestyle='--', label='Target (3x)')
+        
+        # 6. Gross Margin
+        plt.subplot(3, 2, 6)
+        if 'GrossMargin' in self.forecaster.data.columns:
+            self.forecaster.forecasting_competition('GrossMargin')
+            margin_forecast = self.forecaster.forecast_future('GrossMargin', periods)
+            plt.plot(margin_forecast.index, margin_forecast['GrossMargin_Forecast'], 'g-')
+            plt.title('Gross Margin % Forecast')
+            plt.grid(True)
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.95])  # Adjust for suptitle
+        plt.show()
+        
+        # Return a collection of all forecasts
+        return {
+            'corridor_forecasts': corridor_forecasts,
+            'unit_economics_forecasts': unit_economics_forecasts,
+            'revenue_forecasts': revenue_forecasts,
+            'margin_forecasts': margin_forecasts,
+            'customer_forecasts': customer_forecasts
+        }
+
+# Example usage
+if __name__ == "__main__":
+    from fintech_forecaster import FinTechForecaster
+    
+    # Initialize base forecaster
+    base_forecaster = FinTechForecaster()
+    
+    # Initialize Wise adapter
+    wise_adapter = WiseMetricsAdapter(base_forecaster)
+    
+    # Generate Wise-specific data
+    wise_data = wise_adapter.generate_wise_sample_data()
+    
+    # Run comprehensive dashboard
+    wise_adapter.run_wise_forecasting_dashboard()
