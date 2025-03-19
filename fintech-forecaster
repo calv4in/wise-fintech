@@ -1,0 +1,1200 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+import xgboost as XGBRegressor
+from datetime import datetime, timedelta
+from itertools import product
+import warnings
+warnings.filterwarnings('ignore')
+
+class FinTechForecaster:
+    """
+    A machine learning model for forecasting financial metrics of a FinTech company.
+    """
+    
+    def __init__(self, data=None):
+        """Initialize the forecaster with optional data."""
+        self.data = data
+        self.models = {}
+        self.forecasts = {}
+        self.feature_importance = {}
+        self.metrics = {}
+        self.best_model = {}
+    
+    def load_sample_data(self, periods=36, freq='M', seed=42):
+        """
+        Generate sample fintech financial data if real data isn't provided.
+        
+        Parameters:
+        -----------
+        periods : int, default 36
+            Number of time periods to generate
+        freq : str, default 'M'
+            Frequency of time periods ('D', 'W', 'M', 'Q', 'Y')
+        seed : int, default 42
+            Random seed for reproducibility
+        """
+        np.random.seed(seed)
+        
+        # Create date range
+        end_date = datetime.now()
+        start_date = end_date - pd.DateOffset(months=periods) if freq == 'M' else end_date - pd.DateOffset(days=periods)
+        date_range = pd.date_range(start=start_date, end=end_date, freq=freq)
+        
+        # Base trends with some seasonality and noise
+        transaction_volume = np.linspace(1000000, 5000000, len(date_range)) 
+        transaction_volume += np.sin(np.linspace(0, 10, len(date_range))) * 100000  # Seasonality
+        transaction_volume += np.random.normal(0, 100000, len(date_range))  # Noise
+        
+        # Average transaction size
+        avg_transaction = np.linspace(300, 500, len(date_range))
+        avg_transaction += np.sin(np.linspace(0, 12, len(date_range))) * 20  # Seasonality
+        avg_transaction += np.random.normal(0, 10, len(date_range))  # Noise
+        
+        # Transaction fee percentage (slowly declining)
+        fee_percentage = np.linspace(0.7, 0.5, len(date_range)) 
+        fee_percentage += np.random.normal(0, 0.01, len(date_range))  # Small noise
+        
+        # Customer acquisition cost (slowly improving)
+        cac = np.linspace(100, 80, len(date_range))
+        cac += np.sin(np.linspace(0, 8, len(date_range))) * 5  # Seasonality
+        cac += np.random.normal(0, 3, len(date_range))  # Noise
+        
+        # Marketing spend
+        marketing = transaction_volume * 0.03  # 3% of transaction volume
+        marketing += np.random.normal(0, marketing.mean() * 0.05, len(date_range))  # 5% noise
+        
+        # Customer count (growing)
+        customer_growth_rate = np.linspace(0.05, 0.03, len(date_range))  # Declining growth rate
+        customers = [100000]  # Starting customer count
+        for i in range(1, len(date_range)):
+            customers.append(customers[-1] * (1 + customer_growth_rate[i] + np.random.normal(0, 0.005)))
+        
+        # Calculate derived metrics
+        revenue = (transaction_volume * fee_percentage / 100)
+        operational_costs = revenue * 0.4 + np.random.normal(0, revenue.mean() * 0.02, len(date_range))
+        tech_costs = revenue * 0.15 + np.random.normal(0, revenue.mean() * 0.01, len(date_range))
+        total_expenses = operational_costs + marketing + tech_costs
+        gross_profit = revenue - operational_costs
+        net_profit = revenue - total_expenses
+        operating_cash_flow = net_profit + (tech_costs * 0.7)  # Adding back non-cash expenses (70% of tech costs)
+        free_cash_flow = operating_cash_flow - (tech_costs * 0.3)  # Capex approximated as 30% of tech costs
+        
+        # Create DataFrame
+        self.data = pd.DataFrame({
+            'Date': date_range,
+            'TransactionVolume': transaction_volume,
+            'AvgTransactionSize': avg_transaction,
+            'FeePercentage': fee_percentage,
+            'CustomerCount': customers,
+            'CAC': cac,
+            'MarketingSpend': marketing,
+            'TechCosts': tech_costs,
+            'Revenue': revenue,
+            'OperationalCosts': operational_costs,
+            'TotalExpenses': total_expenses,
+            'GrossProfit': gross_profit,
+            'NetProfit': net_profit,
+            'OperatingCashFlow': operating_cash_flow,
+            'FreeCashFlow': free_cash_flow
+        })
+        
+        self.data['Month'] = self.data['Date'].dt.month
+        self.data['Quarter'] = self.data['Date'].dt.quarter
+        self.data['Year'] = self.data['Date'].dt.year
+        
+        self.data.set_index('Date', inplace=True)
+        
+        print(f"Sample data generated with {len(self.data)} {freq} periods.")
+        return self.data
+    
+    def load_data(self, file_path):
+        """Load data from CSV file."""
+        self.data = pd.read_csv(file_path)
+        
+        # Convert date column to datetime
+        date_cols = [col for col in self.data.columns if 'date' in col.lower()]
+        if date_cols:
+            self.data[date_cols[0]] = pd.to_datetime(self.data[date_cols[0]])
+            self.data.set_index(date_cols[0], inplace=True)
+        
+        print(f"Data loaded with {len(self.data)} rows and {len(self.data.columns)} columns.")
+        return self.data
+    
+    def explore_data(self, target_columns=None):
+        """Explore the data and show key statistics."""
+        if self.data is None:
+            print("No data loaded. Please load data first.")
+            return
+        
+        if target_columns is None:
+            target_columns = ['Revenue', 'TotalExpenses', 'NetProfit', 'FreeCashFlow']
+        
+        # Check for target columns in the data
+        available_targets = [col for col in target_columns if col in self.data.columns]
+        
+        if not available_targets:
+            print(f"None of the specified target columns {target_columns} found in data.")
+            print(f"Available columns: {list(self.data.columns)}")
+            return
+        
+        # Basic statistics
+        print("Basic Statistics:")
+        print(self.data[available_targets].describe())
+        
+        # Check for missing values
+        missing_values = self.data[available_targets].isnull().sum()
+        print("\nMissing Values:")
+        print(missing_values)
+        
+        # Plot time series
+        plt.figure(figsize=(14, 8))
+        for i, col in enumerate(available_targets):
+            plt.subplot(len(available_targets), 1, i+1)
+            plt.plot(self.data.index, self.data[col])
+            plt.title(f'{col} Over Time')
+            plt.grid(True)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Plot correlation matrix
+        plt.figure(figsize=(12, 10))
+        corr_matrix = self.data.corr()
+        sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', linewidths=0.5)
+        plt.title('Correlation Matrix of Financial Metrics')
+        plt.show()
+        
+        return self.data[available_targets].describe()
+    
+    def preprocess_data(self, target_column, test_size=0.2, features=None):
+        """
+        Preprocess data for forecasting, including feature engineering and scaling.
+        
+        Parameters:
+        -----------
+        target_column : str
+            The column to forecast
+        test_size : float, default 0.2
+            Proportion of data to use for testing
+        features : list, optional
+            List of feature columns to use. If None, uses all numeric columns excluding the target.
+        """
+        if self.data is None:
+            print("No data loaded. Please load data first.")
+            return
+        
+        if target_column not in self.data.columns:
+            print(f"Target column '{target_column}' not found in data.")
+            return
+        
+        # Make a copy of the data
+        data = self.data.copy()
+        
+        # Feature engineering
+        data['Month_sin'] = np.sin(2 * np.pi * data.index.month / 12)
+        data['Month_cos'] = np.cos(2 * np.pi * data.index.month / 12)
+        data['Quarter_sin'] = np.sin(2 * np.pi * data.index.quarter / 4)
+        data['Quarter_cos'] = np.cos(2 * np.pi * data.index.quarter / 4)
+        
+        # Add lag features for the target
+        for lag in [1, 2, 3, 6, 12]:
+            if len(data) > lag:
+                data[f'{target_column}_lag_{lag}'] = data[target_column].shift(lag)
+        
+        # Add moving averages
+        for window in [3, 6, 12]:
+            if len(data) > window:
+                data[f'{target_column}_ma_{window}'] = data[target_column].rolling(window=window).mean()
+        
+        # Add growth rates
+        if len(data) > 1:
+            data[f'{target_column}_pct_change'] = data[target_column].pct_change()
+        if len(data) > 12:
+            data[f'{target_column}_yoy_change'] = data[target_column].pct_change(12)
+        
+        # Drop rows with NaN values (from lag features)
+        data = data.dropna()
+        
+        # Select features
+        if features is None:
+            # Use all numeric columns except the target
+            features = [col for col in data.columns if 
+                       col != target_column and 
+                       pd.api.types.is_numeric_dtype(data[col])]
+        
+        # Split data into features and target
+        X = data[features]
+        y = data[target_column]
+        
+        # Split into train and test sets
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, shuffle=False
+        )
+        
+        # Scale the features
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        # Store preprocessing info for later use
+        self.preprocessing = {
+            'target_column': target_column,
+            'features': features,
+            'scaler': scaler,
+            'train_index': X_train.index,
+            'test_index': X_test.index,
+            'X_train': X_train,
+            'X_test': X_test,
+            'y_train': y_train,
+            'y_test': y_test,
+            'X_train_scaled': X_train_scaled,
+            'X_test_scaled': X_test_scaled
+        }
+        
+        print(f"Data preprocessed for target '{target_column}'.")
+        print(f"Training data shape: {X_train.shape}")
+        print(f"Testing data shape: {X_test.shape}")
+        
+        return self.preprocessing
+    
+    def train_arima(self, target_column, order=(1, 1, 1)):
+        """
+        Train an ARIMA model.
+        
+        Parameters:
+        -----------
+        target_column : str
+            The column to forecast
+        order : tuple, default (1, 1, 1)
+            ARIMA order (p, d, q)
+        """
+        if self.data is None:
+            print("No data loaded. Please load data first.")
+            return
+        
+        if target_column not in self.data.columns:
+            print(f"Target column '{target_column}' not found in data.")
+            return
+        
+        # Prepare data (no need for feature engineering, just the target time series)
+        train_size = int(len(self.data) * 0.8)
+        train_data = self.data[target_column][:train_size]
+        test_data = self.data[target_column][train_size:]
+        
+        # Train ARIMA model
+        model = ARIMA(train_data, order=order)
+        fitted_model = model.fit()
+        
+        # Make predictions
+        predictions = fitted_model.forecast(steps=len(test_data))
+        
+        # Calculate metrics
+        mae = mean_absolute_error(test_data, predictions)
+        rmse = np.sqrt(mean_squared_error(test_data, predictions))
+        
+        # Store results
+        self.models[f'ARIMA_{target_column}'] = fitted_model
+        self.forecasts[f'ARIMA_{target_column}'] = predictions
+        self.metrics[f'ARIMA_{target_column}'] = {'MAE': mae, 'RMSE': rmse}
+        
+        print(f"ARIMA model trained for '{target_column}'.")
+        print(f"MAE: {mae:.2f}, RMSE: {rmse:.2f}")
+        
+        return {
+            'model': fitted_model,
+            'predictions': predictions,
+            'metrics': {'MAE': mae, 'RMSE': rmse},
+            'train_data': train_data,
+            'test_data': test_data
+        }
+    
+    def train_sarima(self, target_column, order=(1, 1, 1), seasonal_order=(1, 1, 1, 12)):
+        """
+        Train a SARIMA model.
+        
+        Parameters:
+        -----------
+        target_column : str
+            The column to forecast
+        order : tuple, default (1, 1, 1)
+            ARIMA order (p, d, q)
+        seasonal_order : tuple, default (1, 1, 1, 12)
+            Seasonal ARIMA order (P, D, Q, s)
+        """
+        if self.data is None:
+            print("No data loaded. Please load data first.")
+            return
+        
+        if target_column not in self.data.columns:
+            print(f"Target column '{target_column}' not found in data.")
+            return
+        
+        # Prepare data (no need for feature engineering, just the target time series)
+        train_size = int(len(self.data) * 0.8)
+        train_data = self.data[target_column][:train_size]
+        test_data = self.data[target_column][train_size:]
+        
+        # Train SARIMA model
+        model = SARIMAX(train_data, order=order, seasonal_order=seasonal_order)
+        fitted_model = model.fit(disp=False)
+        
+        # Make predictions
+        predictions = fitted_model.forecast(steps=len(test_data))
+        
+        # Calculate metrics
+        mae = mean_absolute_error(test_data, predictions)
+        rmse = np.sqrt(mean_squared_error(test_data, predictions))
+        
+        # Store results
+        self.models[f'SARIMA_{target_column}'] = fitted_model
+        self.forecasts[f'SARIMA_{target_column}'] = predictions
+        self.metrics[f'SARIMA_{target_column}'] = {'MAE': mae, 'RMSE': rmse}
+        
+        print(f"SARIMA model trained for '{target_column}'.")
+        print(f"MAE: {mae:.2f}, RMSE: {rmse:.2f}")
+        
+        return {
+            'model': fitted_model,
+            'predictions': predictions,
+            'metrics': {'MAE': mae, 'RMSE': rmse},
+            'train_data': train_data,
+            'test_data': test_data
+        }
+    
+    def train_exp_smoothing(self, target_column, seasonal_periods=12):
+        """
+        Train an Exponential Smoothing model.
+        
+        Parameters:
+        -----------
+        target_column : str
+            The column to forecast
+        seasonal_periods : int, default 12
+            Number of periods in a season
+        """
+        if self.data is None:
+            print("No data loaded. Please load data first.")
+            return
+        
+        if target_column not in self.data.columns:
+            print(f"Target column '{target_column}' not found in data.")
+            return
+        
+        # Prepare data (no need for feature engineering, just the target time series)
+        train_size = int(len(self.data) * 0.8)
+        train_data = self.data[target_column][:train_size]
+        test_data = self.data[target_column][train_size:]
+        
+        # Train Exponential Smoothing model
+        model = ExponentialSmoothing(
+            train_data,
+            seasonal='add',
+            seasonal_periods=seasonal_periods
+        )
+        fitted_model = model.fit()
+        
+        # Make predictions
+        predictions = fitted_model.forecast(steps=len(test_data))
+        
+        # Calculate metrics
+        mae = mean_absolute_error(test_data, predictions)
+        rmse = np.sqrt(mean_squared_error(test_data, predictions))
+        
+        # Store results
+        self.models[f'ExpSmoothing_{target_column}'] = fitted_model
+        self.forecasts[f'ExpSmoothing_{target_column}'] = predictions
+        self.metrics[f'ExpSmoothing_{target_column}'] = {'MAE': mae, 'RMSE': rmse}
+        
+        print(f"Exponential Smoothing model trained for '{target_column}'.")
+        print(f"MAE: {mae:.2f}, RMSE: {rmse:.2f}")
+        
+        return {
+            'model': fitted_model,
+            'predictions': predictions,
+            'metrics': {'MAE': mae, 'RMSE': rmse},
+            'train_data': train_data,
+            'test_data': test_data
+        }
+    
+    def train_random_forest(self, target_column, n_estimators=100, features=None, test_size=0.2):
+        """
+        Train a Random Forest Regressor.
+        
+        Parameters:
+        -----------
+        target_column : str
+            The column to forecast
+        n_estimators : int, default 100
+            Number of trees in the forest
+        features : list, optional
+            List of feature columns to use. If None, uses all numeric columns excluding the target.
+        test_size : float, default 0.2
+            Proportion of data to use for testing
+        """
+        # Preprocess data if not already done
+        if not hasattr(self, 'preprocessing') or self.preprocessing['target_column'] != target_column:
+            self.preprocess_data(target_column, test_size, features)
+        
+        # Get preprocessed data
+        prep = self.preprocessing
+        
+        # Train Random Forest model
+        model = RandomForestRegressor(n_estimators=n_estimators, random_state=42)
+        model.fit(prep['X_train_scaled'], prep['y_train'])
+        
+        # Make predictions
+        predictions = model.predict(prep['X_test_scaled'])
+        
+        # Calculate metrics
+        mae = mean_absolute_error(prep['y_test'], predictions)
+        rmse = np.sqrt(mean_squared_error(prep['y_test'], predictions))
+        
+        # Calculate feature importance
+        feature_importance = pd.DataFrame({
+            'Feature': prep['features'],
+            'Importance': model.feature_importances_
+        }).sort_values('Importance', ascending=False)
+        
+        # Store results
+        self.models[f'RandomForest_{target_column}'] = model
+        self.forecasts[f'RandomForest_{target_column}'] = pd.Series(
+            predictions, index=prep['test_index']
+        )
+        self.metrics[f'RandomForest_{target_column}'] = {'MAE': mae, 'RMSE': rmse}
+        self.feature_importance[f'RandomForest_{target_column}'] = feature_importance
+        
+        print(f"Random Forest model trained for '{target_column}'.")
+        print(f"MAE: {mae:.2f}, RMSE: {rmse:.2f}")
+        print("\nTop 5 important features:")
+        print(feature_importance.head())
+        
+        return {
+            'model': model,
+            'predictions': pd.Series(predictions, index=prep['test_index']),
+            'metrics': {'MAE': mae, 'RMSE': rmse},
+            'feature_importance': feature_importance,
+            'train_data': prep['y_train'],
+            'test_data': prep['y_test']
+        }
+    
+    def train_xgboost(self, target_column, n_estimators=100, learning_rate=0.1, features=None, test_size=0.2):
+        """
+        Train an XGBoost Regressor.
+        
+        Parameters:
+        -----------
+        target_column : str
+            The column to forecast
+        n_estimators : int, default 100
+            Number of boosting rounds
+        learning_rate : float, default 0.1
+            Boosting learning rate
+        features : list, optional
+            List of feature columns to use. If None, uses all numeric columns excluding the target.
+        test_size : float, default 0.2
+            Proportion of data to use for testing
+        """
+        # Preprocess data if not already done
+        if not hasattr(self, 'preprocessing') or self.preprocessing['target_column'] != target_column:
+            self.preprocess_data(target_column, test_size, features)
+        
+        # Get preprocessed data
+        prep = self.preprocessing
+        
+        # Train XGBoost model
+        model = XGBRegressor(n_estimators=n_estimators, learning_rate=learning_rate, random_state=42)
+        model.fit(prep['X_train_scaled'], prep['y_train'])
+        
+        # Make predictions
+        predictions = model.predict(prep['X_test_scaled'])
+        
+        # Calculate metrics
+        mae = mean_absolute_error(prep['y_test'], predictions)
+        rmse = np.sqrt(mean_squared_error(prep['y_test'], predictions))
+        
+        # Calculate feature importance
+        feature_importance = pd.DataFrame({
+            'Feature': prep['features'],
+            'Importance': model.feature_importances_
+        }).sort_values('Importance', ascending=False)
+        
+        # Store results
+        self.models[f'XGBoost_{target_column}'] = model
+        self.forecasts[f'XGBoost_{target_column}'] = pd.Series(
+            predictions, index=prep['test_index']
+        )
+        self.metrics[f'XGBoost_{target_column}'] = {'MAE': mae, 'RMSE': rmse}
+        self.feature_importance[f'XGBoost_{target_column}'] = feature_importance
+        
+        print(f"XGBoost model trained for '{target_column}'.")
+        print(f"MAE: {mae:.2f}, RMSE: {rmse:.2f}")
+        print("\nTop 5 important features:")
+        print(feature_importance.head())
+        
+        return {
+            'model': model,
+            'predictions': pd.Series(predictions, index=prep['test_index']),
+            'metrics': {'MAE': mae, 'RMSE': rmse},
+            'feature_importance': feature_importance,
+            'train_data': prep['y_train'],
+            'test_data': prep['y_test']
+        }
+    
+    def find_best_arima_params(self, target_column, max_p=3, max_d=2, max_q=3):
+        """
+        Find the best ARIMA parameters using grid search.
+        
+        Parameters:
+        -----------
+        target_column : str
+            The column to forecast
+        max_p, max_d, max_q : int
+            Maximum values for p, d, q parameters
+        """
+        if self.data is None:
+            print("No data loaded. Please load data first.")
+            return
+        
+        if target_column not in self.data.columns:
+            print(f"Target column '{target_column}' not found in data.")
+            return
+        
+        # Prepare data
+        train_size = int(len(self.data) * 0.8)
+        train_data = self.data[target_column][:train_size]
+        
+        # Grid search parameters
+        p_values = range(0, max_p + 1)
+        d_values = range(0, max_d + 1)
+        q_values = range(0, max_q + 1)
+        
+        best_aic = float('inf')
+        best_params = None
+        
+        print(f"Finding best ARIMA parameters for '{target_column}'...")
+        
+        # Grid search
+        for p, d, q in product(p_values, d_values, q_values):
+            if p == 0 and q == 0:
+                continue  # Skip invalid models
+            
+            try:
+                # Train model
+                model = ARIMA(train_data, order=(p, d, q))
+                fitted_model = model.fit()
+                
+                # Check AIC
+                aic = fitted_model.aic
+                
+                if aic < best_aic:
+                    best_aic = aic
+                    best_params = (p, d, q)
+                    
+                    print(f"New best parameters found: (p={p}, d={d}, q={q}), AIC: {aic:.2f}")
+            
+            except:
+                continue  # Skip models that don't converge
+        
+        print(f"Best ARIMA parameters for '{target_column}': {best_params}, AIC: {best_aic:.2f}")
+        
+        return best_params
+    
+    def forecasting_competition(self, target_column):
+        """
+        Run a competition between different forecasting models.
+        
+        Parameters:
+        -----------
+        target_column : str
+            The column to forecast
+        """
+        if self.data is None:
+            print("No data loaded. Please load data first.")
+            return
+        
+        if target_column not in self.data.columns:
+            print(f"Target column '{target_column}' not found in data.")
+            return
+        
+        # Train different models
+        print("Training ARIMA model...")
+        arima_results = self.train_arima(target_column)
+        
+        print("\nTraining SARIMA model...")
+        sarima_results = self.train_sarima(target_column)
+        
+        print("\nTraining Exponential Smoothing model...")
+        exp_results = self.train_exp_smoothing(target_column)
+        
+        print("\nTraining Random Forest model...")
+        rf_results = self.train_random_forest(target_column)
+        
+        print("\nTraining XGBoost model...")
+        xgb_results = self.train_xgboost(target_column)
+        
+        # Compare models
+        results = pd.DataFrame({
+            'Model': ['ARIMA', 'SARIMA', 'ExpSmoothing', 'RandomForest', 'XGBoost'],
+            'MAE': [
+                arima_results['metrics']['MAE'],
+                sarima_results['metrics']['MAE'],
+                exp_results['metrics']['MAE'],
+                rf_results['metrics']['MAE'],
+                xgb_results['metrics']['MAE']
+            ],
+            'RMSE': [
+                arima_results['metrics']['RMSE'],
+                sarima_results['metrics']['RMSE'],
+                exp_results['metrics']['RMSE'],
+                rf_results['metrics']['RMSE'],
+                xgb_results['metrics']['RMSE']
+            ]
+        })
+        
+        # Sort by RMSE (lower is better)
+        results = results.sort_values('RMSE')
+        
+        # Determine best model
+        best_model_name = results.iloc[0]['Model']
+        
+        # Map model name to actual model
+        model_map = {
+            'ARIMA': f'ARIMA_{target_column}',
+            'SARIMA': f'SARIMA_{target_column}',
+            'ExpSmoothing': f'ExpSmoothing_{target_column}',
+            'RandomForest': f'RandomForest_{target_column}',
+            'XGBoost': f'XGBoost_{target_column}'
+        }
+        
+        best_model_key = model_map[best_model_name]
+        
+        # Store best model info
+        self.best_model[target_column] = {
+            'model_name': best_model_name,
+            'model': self.models[best_model_key],
+            'forecasts': self.forecasts[best_model_key],
+            'metrics': self.metrics[best_model_key]
+        }
+        
+        print("\nModel Comparison Results:")
+        print(results)
+        print(f"\nBest model for {target_column}: {best_model_name}")
+        print(f"RMSE: {results.iloc[0]['RMSE']:.2f}, MAE: {results.iloc[0]['MAE']:.2f}")
+        
+        # Plot results
+        self.plot_forecast_comparison(target_column)
+        
+        return results
+    
+    def plot_forecast_comparison(self, target_column):
+        """
+        Plot comparison of different models' forecasts.
+        
+        Parameters:
+        -----------
+        target_column : str
+            The column that was forecasted
+        """
+        # Prepare data
+        train_size = int(len(self.data) * 0.8)
+        train_data = self.data[target_column][:train_size]
+        test_data = self.data[target_column][train_size:]
+        
+        # Get model forecasts
+        forecasts = {}
+        for model_name, forecast in self.forecasts.items():
+            if target_column in model_name:
+                model_type = model_name.split('_')[0]
+                forecasts[model_type] = forecast
+        
+        # Plot
+        plt.figure(figsize=(14, 7))
+        
+        # Plot actual data
+        plt.plot(train_data.index, train_data, 'b-', label='Training Data')
+        plt.plot(test_data.index, test_data, 'k-', label='Actual Test Data')
+        
+        # Plot forecasts
+        colors = ['r-', 'g-', 'c-', 'm-', 'y-']
+        for i, (model_name, forecast) in enumerate(forecasts.items()):
+            plt.plot(test_data.index, forecast, colors[i % len(colors)], label=f'{model_name} Forecast')
+        
+        plt.title(f'Forecast Comparison for {target_column}')
+        plt.xlabel('Date')
+        plt.ylabel(target_column)
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+    
+    def forecast_future(self, target_column, periods=12, freq='M'):
+        """
+        Generate future forecasts using the best model.
+        
+        Parameters:
+        -----------
+        target_column : str
+            The column to forecast
+        periods : int, default 12
+            Number of periods to forecast
+        freq : str, default 'M'
+            Frequency of time periods ('D', 'W', 'M', 'Q', 'Y')
+        """
+        if not target_column in self.best_model:
+            print(f"No best model found for '{target_column}'. Run forecasting_competition first.")
+            return
+        
+        # Get best model info
+        best_info = self.best_model[target_column]
+        best_model_name = best_info['model_name']
+        best_model = best_info['model']
+        
+        # Generate future dates
+        last_date = self.data.index[-1]
+        if freq == 'M':
+            future_dates = pd.date_range(start=last_date + pd.DateOffset(months=1), periods=periods, freq=freq)
+        elif freq == 'Q':
+            future_dates = pd.date_range(start=last_date + pd.DateOffset(months=3), periods=periods, freq=freq)
+        elif freq == 'Y':
+            future_dates = pd.date_range(start=last_date + pd.DateOffset(years=1), periods=periods, freq=freq)
+        else:  # Default to days
+            future_dates = pd.date_range(start=last_date + pd.DateOffset(days=1), periods=periods, freq=freq)
+        
+        # Generate forecasts based on model type
+        if best_model_name in ['ARIMA', 'SARIMA', 'ExpSmoothing']:
+            future_forecasts = best_model.forecast(steps=periods)
+        else:  # For RandomForest and XGBoost
+            # Need to generate future features
+            future_features = pd.DataFrame(index=future_dates)
+            
+            # Add calendar features
+            future_features['Month'] = future_features.index.month
+            future_features['Quarter'] = future_features.index.quarter
+            future_features['Year'] = future_features.index.year
+            future_features['Month_sin'] = np.sin(2 * np.pi * future_features.index.month / 12)
+            future_features['Month_cos'] = np.cos(2 * np.pi * future_features.index.month / 12)
+            future_features['Quarter_sin'] = np.sin(2 * np.pi * future_features.index.quarter / 4)
+            future_features['Quarter_cos'] = np.cos(2 * np.pi * future_features.index.quarter / 4)
+            
+            # For lagged features, we'll use the last available actual values and 
+            # then our own predictions as we go
+            temp_data = self.data[target_column].copy()
+            
+            for i in range(periods):
+                # Add lag features for current date
+                for lag in [1, 2, 3, 6, 12]:
+                    lag_date = future_dates[i] - pd.DateOffset(months=lag) if freq == 'M' else future_dates[i] - pd.DateOffset(days=lag)
+                    future_features.loc[future_dates[i], f'{target_column}_lag_{lag}'] = temp_data.asof(lag_date)
+                
+                # Add moving averages
+                for window in [3, 6, 12]:
+                    window_dates = []
+                    for j in range(window):
+                        if freq == 'M':
+                            window_date = future_dates[i] - pd.DateOffset(months=j+1)
+                        else:
+                            window_date = future_dates[i] - pd.DateOffset(days=j+1)
+                        window_dates.append(window_date)
+                    
+                    window_values = [temp_data.asof(date) for date in window_dates]
+                    future_features.loc[future_dates[i], f'{target_column}_ma_{window}'] = sum(window_values) / len(window_values)
+                
+                # Add growth rates
+                prev_date = future_dates[i] - pd.DateOffset(months=1) if freq == 'M' else future_dates[i] - pd.DateOffset(days=1)
+                prev_value = temp_data.asof(prev_date)
+                if prev_value != 0:
+                    future_features.loc[future_dates[i], f'{target_column}_pct_change'] = (temp_data.asof(future_dates[i]) - prev_value) / prev_value
+                else:
+                    future_features.loc[future_dates[i], f'{target_column}_pct_change'] = 0
+                
+                # Year-over-year change
+                yoy_date = future_dates[i] - pd.DateOffset(years=1)
+                yoy_value = temp_data.asof(yoy_date)
+                if yoy_value != 0:
+                    future_features.loc[future_dates[i], f'{target_column}_yoy_change'] = (temp_data.asof(future_dates[i]) - yoy_value) / yoy_value
+                else:
+                    future_features.loc[future_dates[i], f'{target_column}_yoy_change'] = 0
+            
+            # Align features with the training set
+            required_features = self.preprocessing['features']
+            for feature in required_features:
+                if feature not in future_features.columns:
+                    future_features[feature] = 0  # Default for missing features
+            
+            future_features = future_features[required_features]
+            
+            # Scale features
+            future_features_scaled = self.preprocessing['scaler'].transform(future_features)
+            
+            # Make predictions
+            future_forecasts = best_model.predict(future_features_scaled)
+            future_forecasts = pd.Series(future_forecasts, index=future_dates)
+        
+        # Create forecast DataFrame
+        forecast_df = pd.DataFrame({
+            'Date': future_dates,
+            f'{target_column}_Forecast': future_forecasts
+        })
+        
+        if not isinstance(forecast_df.index, pd.DatetimeIndex):
+            forecast_df.set_index('Date', inplace=True)
+        
+        # Plot results
+        self.plot_future_forecast(target_column, forecast_df)
+        
+        return forecast_df
+    
+    def plot_future_forecast(self, target_column, forecast_df):
+        """
+        Plot future forecasts.
+        
+        Parameters:
+        -----------
+        target_column : str
+            The column that was forecasted
+        forecast_df : DataFrame
+            DataFrame containing the forecasts
+        """
+        # Get historical data
+        historical = self.data[target_column]
+        
+        # Plot
+        plt.figure(figsize=(14, 7))
+        
+        # Plot historical data
+        plt.plot(historical.index, historical, 'b-', label='Historical Data')
+        
+        # Plot forecast
+        forecast_col = f'{target_column}_Forecast'
+        plt.plot(forecast_df.index, forecast_df[forecast_col], 'r-', label='Forecast')
+        
+        # Add shaded area for confidence interval (approximate)
+        if target_column in self.best_model:
+            rmse = self.best_model[target_column]['metrics']['RMSE']
+            plt.fill_between(
+                forecast_df.index,
+                forecast_df[forecast_col] - 1.96 * rmse,
+                forecast_df[forecast_col] + 1.96 * rmse,
+                color='r', alpha=0.2, label='95% Confidence Interval'
+            )
+        
+        plt.title(f'Future Forecast for {target_column}')
+        plt.xlabel('Date')
+        plt.ylabel(target_column)
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+        
+        return forecast_df
+    
+    def forecast_multiple_metrics(self, metrics=None, periods=12, freq='M'):
+        """
+        Forecast multiple financial metrics.
+        
+        Parameters:
+        -----------
+        metrics : list, optional
+            List of metrics to forecast. If None, uses default metrics.
+        periods : int, default 12
+            Number of periods to forecast
+        freq : str, default 'M'
+            Frequency of time periods ('D', 'W', 'M', 'Q', 'Y')
+        """
+        if metrics is None:
+            metrics = ['Revenue', 'TotalExpenses', 'NetProfit', 'FreeCashFlow']
+        
+        # Check for available metrics
+        available_metrics = [col for col in metrics if col in self.data.columns]
+        
+        if not available_metrics:
+            print(f"None of the specified metrics {metrics} found in data.")
+            return
+        
+        # Run forecasting competition for each metric
+        for metric in available_metrics:
+            print(f"\n{'='*50}")
+            print(f"Forecasting {metric}")
+            print(f"{'='*50}")
+            
+            # Run competition
+            self.forecasting_competition(metric)
+            
+            # Forecast future
+            self.forecast_future(metric, periods, freq)
+        
+        # Create summary
+        summary = pd.DataFrame({
+            'Metric': available_metrics,
+            'Best Model': [self.best_model[metric]['model_name'] for metric in available_metrics],
+            'RMSE': [self.best_model[metric]['metrics']['RMSE'] for metric in available_metrics],
+            'MAE': [self.best_model[metric]['metrics']['MAE'] for metric in available_metrics]
+        })
+        
+        print("\nSummary of Results:")
+        print(summary)
+        
+        return summary
+    
+    def evaluate_model_assumptions(self, target_column):
+        """
+        Evaluate model assumptions for time series models.
+        
+        Parameters:
+        -----------
+        target_column : str
+            The column that was forecasted
+        """
+        if not f'ARIMA_{target_column}' in self.models:
+            print("ARIMA model not available. Please train an ARIMA model first.")
+            return
+        
+        # Get residuals from ARIMA model
+        model = self.models[f'ARIMA_{target_column}']
+        residuals = model.resid
+        
+        # Plot residuals
+        plt.figure(figsize=(14, 10))
+        
+        # Time plot of residuals
+        plt.subplot(2, 2, 1)
+        plt.plot(residuals)
+        plt.title('Residuals')
+        plt.axhline(y=0, color='r', linestyle='-')
+        
+        # Histogram plus estimated density
+        plt.subplot(2, 2, 2)
+        plt.hist(residuals, bins=20, density=True)
+        # Add normal curve
+        xmin, xmax = plt.xlim()
+        x = np.linspace(xmin, xmax, 100)
+        p = stats.norm.pdf(x, np.mean(residuals), np.std(residuals))
+        plt.plot(x, p, 'r', linewidth=2)
+        plt.title('Histogram with Normal Curve')
+        
+        # Q-Q plot
+        plt.subplot(2, 2, 3)
+        stats.probplot(residuals, dist="norm", plot=plt)
+        plt.title('Q-Q Plot')
+        
+        # ACF plot
+        plt.subplot(2, 2, 4)
+        sm.graphics.tsa.plot_acf(residuals, lags=40, ax=plt.gca())
+        plt.title('Autocorrelation Function')
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Durbin-Watson test for autocorrelation
+        dw = durbin_watson(residuals)
+        print(f"Durbin-Watson statistic: {dw:.4f}")
+        if dw < 1.5:
+            print("Positive autocorrelation detected.")
+        elif dw > 2.5:
+            print("Negative autocorrelation detected.")
+        else:
+            print("No autocorrelation detected.")
+        
+        # Shapiro-Wilk test for normality
+        sw_stat, sw_p = stats.shapiro(residuals)
+        print(f"Shapiro-Wilk test for normality: statistic={sw_stat:.4f}, p-value={sw_p:.4f}")
+        if sw_p < 0.05:
+            print("Residuals are not normally distributed.")
+        else:
+            print("Residuals are normally distributed.")
+        
+        # Ljung-Box test for autocorrelation
+        lb_stat, lb_p = sm.stats.acorr_ljungbox(residuals, lags=[20], return_df=False)
+        print(f"Ljung-Box test for autocorrelation: statistic={lb_stat[0]:.4f}, p-value={lb_p[0]:.4f}")
+        if lb_p[0] < 0.05:
+            print("Autocorrelation detected in residuals.")
+        else:
+            print("No autocorrelation detected in residuals.")
+    
+    def monte_carlo_forecast(self, target_column, periods=12, simulations=1000, alpha=0.05):
+        """
+        Generate Monte Carlo forecasts.
+        
+        Parameters:
+        -----------
+        target_column : str
+            The column to forecast
+        periods : int, default 12
+            Number of periods to forecast
+        simulations : int, default 1000
+            Number of simulations to run
+        alpha : float, default 0.05
+            Significance level for confidence intervals
+        """
+        if not target_column in self.best_model:
+            print(f"No best model found for '{target_column}'. Run forecasting_competition first.")
+            return
+        
+        # Get best model info
+        best_info = self.best_model[target_column]
+        best_model_name = best_info['model_name']
+        best_model = best_info['model']
+        
+        # Get historical data
+        historical = self.data[target_column]
+        
+        # Get base forecast
+        base_forecast = self.forecast_future(target_column, periods)
+        base_forecast_values = base_forecast[f'{target_column}_Forecast'].values
+        
+        # Get model error (RMSE)
+        rmse = best_info['metrics']['RMSE']
+        
+        # Run simulations
+        simulation_results = np.zeros((simulations, periods))
+        
+        for i in range(simulations):
+            # Generate forecast with noise
+            noise = np.random.normal(0, rmse, periods)
+            simulation_results[i, :] = base_forecast_values + noise
+        
+        # Calculate percentiles for confidence intervals
+        lower_bound = np.percentile(simulation_results, alpha/2 * 100, axis=0)
+        upper_bound = np.percentile(simulation_results, (1 - alpha/2) * 100, axis=0)
+        median_forecast = np.percentile(simulation_results, 50, axis=0)
+        
+        # Create forecast DataFrame
+        forecast_df = pd.DataFrame({
+            'Date': base_forecast.index,
+            f'{target_column}_Forecast': median_forecast,
+            f'{target_column}_Lower': lower_bound,
+            f'{target_column}_Upper': upper_bound
+        })
+        
+        if not isinstance(forecast_df.index, pd.DatetimeIndex):
+            forecast_df.set_index('Date', inplace=True)
+        
+        # Plot results
+        plt.figure(figsize=(14, 7))
+        
+        # Plot historical data
+        plt.plot(historical.index, historical, 'b-', label='Historical Data')
+        
+        # Plot forecast
+        plt.plot(forecast_df.index, forecast_df[f'{target_column}_Forecast'], 'r-', label='Median Forecast')
+        
+        # Add shaded area for confidence interval
+        plt.fill_between(
+            forecast_df.index,
+            forecast_df[f'{target_column}_Lower'],
+            forecast_df[f'{target_column}_Upper'],
+            color='r', alpha=0.2, label=f'{(1-alpha)*100:.0f}% Confidence Interval'
+        )
+        
+        plt.title(f'Monte Carlo Forecast for {target_column} ({simulations} Simulations)')
+        plt.xlabel('Date')
+        plt.ylabel(target_column)
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+        
+        return forecast_df
+    
+    def scenario_analysis(self, target_column, scenarios=None, periods=12):
+        """
+        Generate scenario-based forecasts.
+        
+        Parameters:
+        -----------
+        target_column : str
+            The column to forecast
+        scenarios : dict, optional
+            Dictionary of scenarios, where keys are scenario names and values are adjustment factors.
+            If None, uses default scenarios.
+        periods : int, default 12
+            Number of periods to forecast
+        """
+        if not target_column in self.best_model:
+            print(f"No best model found for '{target_column}'. Run forecasting_competition first.")
+            return
+        
+        # Default scenarios
+        if scenarios is None:
+            scenarios = {
+                'Base Case': 1.0,
+                'Optimistic': 1.2,
+                'Pessimistic': 0.8
+            }
+        
+        # Get base forecast
+        base_forecast = self.forecast_future(target_column, periods)
+        base_forecast_values = base_forecast[f'{target_column}_Forecast'].values
+        
+        # Create scenario forecasts
+        scenario_results = {}
+        
+        for scenario_name, factor in scenarios.items():
+            scenario_results[scenario_name] = base_forecast_values * factor
+        
+        # Create forecast DataFrame
+        forecast_df = pd.DataFrame({'Date': base_forecast.index})
+        
+        for scenario_name, values in scenario_results.items():
+            forecast_df[f'{scenario_name}'] = values
+        
+        if not isinstance(forecast_df.index, pd.DatetimeIndex):
+            forecast_df.set_index('Date', inplace=True)
+        
+        # Plot results
+        plt.figure(figsize=(14, 7))
+        
+        # Plot historical data
+        historical = self.data[target_column]
+        plt.plot(historical.index, historical, 'b-', label='Historical Data')
+        
+        # Plot scenarios
+        colors = ['r-', 'g-', 'c-', 'm-', 'y-']
+        for i, scenario_name in enumerate(scenario_results.keys()):
+            plt.plot(
+                forecast_df.index, 
+                forecast_df[scenario_name], 
+                colors[i % len(colors)], 
+                label=f'{scenario_name} Scenario'
+            )
+        
+        plt.title(f'Scenario Analysis for {target_column}')
+        plt.xlabel('Date')
+        plt.ylabel(target_column)
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+        
+        return forecast_df
+
+# Usage example
+if __name__ == "__main__":
+    # Create forecaster and generate sample data
+    forecaster = FinTechForecaster()
+    data = forecaster.load_sample_data(periods=36)
+    
+    # Explore data
+    forecaster.explore_data()
+    
+    # Forecast revenue
+    forecaster.forecasting_competition("Revenue")
+    future_revenue = forecaster.forecast_future("Revenue", periods=12)
+    
+    # Forecast net profit
+    forecaster.forecasting_competition("NetProfit")
+    future_profit = forecaster.forecast_future("NetProfit", periods=12)
+    
+    # Forecast multiple metrics
+    summary = forecaster.forecast_multiple_metrics()
+    
+    # Run Monte Carlo simulation
+    mc_forecast = forecaster.monte_carlo_forecast("Revenue")
+    
+    # Run scenario analysis
+    scenario_forecast = forecaster.scenario_analysis("Revenue")
