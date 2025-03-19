@@ -1,0 +1,842 @@
+import React, { useState, useEffect } from 'react';
+import {
+  LineChart, Line, BarChart, Bar, PieChart, Pie, AreaChart, Area,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  Cell, ReferenceLine, ComposedChart
+} from 'recharts';
+
+// Simplified dashboard with minimal dependencies and robust error handling
+const WiseStrategicDashboard = () => {
+  const [data, setData] = useState([]);
+  const [forecastData, setForecastData] = useState([]);
+  const [viewMode, setViewMode] = useState('overview');
+  const [timeRange, setTimeRange] = useState('1y');
+  const [isLoading, setIsLoading] = useState(true);
+  const [selectedModel, setSelectedModel] = useState('xgboost');
+  const [showConfidenceIntervals, setShowConfidenceIntervals] = useState(true);
+  const [showScenarios, setShowScenarios] = useState(true);
+
+  // Generate sample data and forecasts
+  useEffect(() => {
+    try {
+      // Generate historical sample data
+      const sampleData = generateSampleData();
+      setData(sampleData);
+      
+      // Generate forecast data
+      if (sampleData.length > 0) {
+        const lastDataPoint = sampleData[sampleData.length - 1];
+        const futureForecastData = generateForecastData(lastDataPoint);
+        setForecastData(futureForecastData);
+      }
+    } catch (error) {
+      console.error("Error generating data:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  // Filter data based on time range
+  const getFilteredData = () => {
+    if (!data || data.length === 0) return [];
+    
+    let months;
+    switch (timeRange) {
+      case '3m': months = 3; break;
+      case '6m': months = 6; break;
+      case '1y': months = 12; break;
+      case '2y': months = 24; break;
+      case 'all': return data;
+      default: months = 12;
+    }
+    
+    return data.slice(-Math.min(months, data.length));
+  };
+
+  // Format large numbers in a readable way
+  const formatNumber = (num) => {
+    if (!num && num !== 0) return '-';
+    
+    if (num >= 1000000000) {
+      return `$${(num / 1000000000).toFixed(1)}B`;
+    } else if (num >= 1000000) {
+      return `$${(num / 1000000).toFixed(1)}M`;
+    } else if (num >= 1000) {
+      return `$${(num / 1000).toFixed(1)}K`;
+    }
+    return `$${num}`;
+  };
+
+  // Format percentages
+  const formatPercent = (num) => {
+    if (!num && num !== 0) return '-';
+    return `${num.toFixed(2)}%`;
+  };
+
+  // Calculate percentage change
+  const calculateChange = (current, previous) => {
+    if (current === undefined || previous === undefined || previous === 0) return 0;
+    return ((current - previous) / previous) * 100;
+  };
+
+  // Top KPI Cards
+  const renderKPICards = () => {
+    if (isLoading || !data || data.length === 0) {
+      return (
+        <div className="grid grid-cols-4 gap-4 mb-6">
+          {[1, 2, 3, 4].map(i => (
+            <div key={i} className="bg-white rounded-lg shadow p-4 h-24">
+              <div className="animate-pulse h-full flex flex-col justify-between">
+                <div className="h-4 bg-gray-200 rounded w-3/4"></div>
+                <div className="h-6 bg-gray-200 rounded w-1/2"></div>
+                <div className="h-4 bg-gray-200 rounded w-1/4"></div>
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // Get latest data point
+    const latest = data[data.length - 1] || {};
+    const previousPeriod = data.length > 1 ? data[data.length - 2] : {};
+    
+    const kpis = [
+      {
+        title: 'Transaction Volume',
+        value: formatNumber(latest.transactionVolume),
+        change: calculateChange(latest.transactionVolume, previousPeriod.transactionVolume),
+        trend: 'up'
+      },
+      {
+        title: 'Revenue',
+        value: formatNumber(latest.revenue),
+        change: calculateChange(latest.revenue, previousPeriod.revenue),
+        trend: 'up'
+      },
+      {
+        title: 'Take Rate',
+        value: formatPercent(latest.takeRate),
+        change: calculateChange(latest.takeRate, previousPeriod.takeRate),
+        trend: 'down'
+      },
+      {
+        title: 'LTV:CAC Ratio',
+        value: latest.ltvCacRatio?.toFixed(1) || '-',
+        change: calculateChange(latest.ltvCacRatio, previousPeriod.ltvCacRatio),
+        trend: 'up'
+      }
+    ];
+    
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        {kpis.map((kpi, index) => (
+          <div key={index} className="bg-white rounded-lg shadow p-4">
+            <div className="text-gray-500 text-sm">{kpi.title}</div>
+            <div className="text-2xl font-bold mt-1">{kpi.value}</div>
+            <div className={`text-sm mt-2 ${kpi.change >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+              {kpi.change >= 0 ? '↑' : '↓'} {Math.abs(kpi.change).toFixed(1)}%
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  // Revenue Chart
+  const renderRevenueChart = () => {
+    const filteredData = getFilteredData();
+    
+    if (isLoading || filteredData.length === 0) {
+      return (
+        <div className="bg-white rounded-lg shadow p-4 mb-6">
+          <h2 className="text-lg font-semibold mb-4">Revenue Trend</h2>
+          <div className="h-80 animate-pulse bg-gray-200 rounded"></div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="bg-white rounded-lg shadow p-4 mb-6">
+        <h2 className="text-lg font-semibold mb-4">Revenue Trend</h2>
+        <div className="h-80">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={filteredData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="month" />
+              <YAxis tickFormatter={formatNumber} />
+              <Tooltip formatter={(value) => formatNumber(value)} />
+              <Legend />
+              <Line 
+                type="monotone" 
+                dataKey="revenue" 
+                name="Revenue" 
+                stroke="#8884d8" 
+                strokeWidth={2}
+                activeDot={{ r: 8 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    );
+  };
+
+  // Corridor Volume Analysis
+  const renderCorridorAnalysis = () => {
+    const filteredData = getFilteredData();
+    
+    if (isLoading || filteredData.length === 0) {
+      return (
+        <div className="bg-white rounded-lg shadow p-4 mb-6">
+          <h2 className="text-lg font-semibold mb-4">Corridor Distribution</h2>
+          <div className="h-64 animate-pulse bg-gray-200 rounded"></div>
+        </div>
+      );
+    }
+
+    // Use the latest data point for the pie chart
+    const latest = filteredData[filteredData.length - 1];
+    
+    // Create data for the pie chart
+    const corridorData = [
+      { name: 'GBP-EUR', value: latest.corridorGBPEUR || 180 },
+      { name: 'EUR-GBP', value: latest.corridorEURGBP || 150 },
+      { name: 'USD-EUR', value: latest.corridorUSDEUR || 120 },
+      { name: 'GBP-USD', value: latest.corridorGBPUSD || 140 },
+      { name: 'Other', value: latest.corridorOther || 410 }
+    ];
+    
+    const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
+    
+    return (
+      <div className="bg-white rounded-lg shadow p-4 mb-6">
+        <h2 className="text-lg font-semibold mb-4">Corridor Distribution</h2>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={corridorData}
+                cx="50%"
+                cy="50%"
+                innerRadius={60}
+                outerRadius={80}
+                fill="#8884d8"
+                paddingAngle={2}
+                dataKey="value"
+                label={({name, percent}) => `${name} ${(percent * 100).toFixed(0)}%`}
+              >
+                {corridorData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip formatter={(value) => formatNumber(value)} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    );
+  };
+
+  // Customer Metrics Chart
+  const renderCustomerMetrics = () => {
+    const filteredData = getFilteredData();
+    
+    if (isLoading || filteredData.length === 0) {
+      return (
+        <div className="bg-white rounded-lg shadow p-4 mb-6">
+          <h2 className="text-lg font-semibold mb-4">Customer Growth</h2>
+          <div className="h-64 animate-pulse bg-gray-200 rounded"></div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="bg-white rounded-lg shadow p-4 mb-6">
+        <h2 className="text-lg font-semibold mb-4">Customer Growth</h2>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={filteredData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="month" />
+              <YAxis tickFormatter={formatNumber} />
+              <Tooltip formatter={(value) => formatNumber(value)} />
+              <Legend />
+              <Line 
+                type="monotone" 
+                dataKey="activeCustomers" 
+                name="Active Customers" 
+                stroke="#82ca9d" 
+                strokeWidth={2}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    );
+  };
+
+  // Unit Economics Chart
+  const renderUnitEconomics = () => {
+    const filteredData = getFilteredData();
+    
+    if (isLoading || filteredData.length === 0) {
+      return (
+        <div className="bg-white rounded-lg shadow p-4 mb-6">
+          <h2 className="text-lg font-semibold mb-4">Unit Economics</h2>
+          <div className="h-64 animate-pulse bg-gray-200 rounded"></div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="bg-white rounded-lg shadow p-4 mb-6">
+        <h2 className="text-lg font-semibold mb-4">Unit Economics</h2>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={filteredData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="month" />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Bar dataKey="ltvCacRatio" name="LTV:CAC Ratio" fill="#8884d8" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    );
+  };
+
+  // Navigation Controls
+  const renderControls = () => {
+    return (
+      <div className="flex flex-col space-y-4 mb-6">
+        <div className="flex flex-wrap space-x-2">
+          <button 
+            onClick={() => setViewMode('overview')}
+            className={`px-4 py-2 rounded mb-2 ${viewMode === 'overview' ? 'bg-blue-500 text-white' : 'bg-gray-200'}`}
+          >
+            Overview
+          </button>
+          <button 
+            onClick={() => setViewMode('forecasts')}
+            className={`px-4 py-2 rounded mb-2 ${viewMode === 'forecasts' ? 'bg-blue-500 text-white' : 'bg-gray-200'}`}
+          >
+            Forecasts
+          </button>
+          <button 
+            onClick={() => setViewMode('models')}
+            className={`px-4 py-2 rounded mb-2 ${viewMode === 'models' ? 'bg-blue-500 text-white' : 'bg-gray-200'}`}
+          >
+            ML Insights
+          </button>
+          <button 
+            onClick={() => setViewMode('customers')}
+            className={`px-4 py-2 rounded mb-2 ${viewMode === 'customers' ? 'bg-blue-500 text-white' : 'bg-gray-200'}`}
+          >
+            Customers
+          </button>
+          <button 
+            onClick={() => setViewMode('economics')}
+            className={`px-4 py-2 rounded mb-2 ${viewMode === 'economics' ? 'bg-blue-500 text-white' : 'bg-gray-200'}`}
+          >
+            Unit Economics
+          </button>
+        </div>
+        
+        <div className="flex flex-wrap justify-between items-center p-4 bg-white rounded-lg shadow">
+          <div className="flex items-center mr-4 mb-2 md:mb-0">
+            <span className="mr-2">Time Range:</span>
+            <select 
+              value={timeRange}
+              onChange={(e) => setTimeRange(e.target.value)}
+              className="border rounded px-2 py-1"
+            >
+              <option value="3m">3 Months</option>
+              <option value="6m">6 Months</option>
+              <option value="1y">1 Year</option>
+              <option value="2y">2 Years</option>
+              <option value="all">All Data</option>
+            </select>
+          </div>
+          
+          {(viewMode === 'forecasts' || viewMode === 'models') && (
+            <>
+              <div className="flex items-center mr-4 mb-2 md:mb-0">
+                <span className="mr-2">Model:</span>
+                <select 
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  className="border rounded px-2 py-1"
+                >
+                  <option value="xgboost">XGBoost</option>
+                  <option value="randomforest">Random Forest</option>
+                  <option value="arima">ARIMA</option>
+                  <option value="sarima">SARIMA</option>
+                </select>
+              </div>
+              
+              <div className="flex items-center space-x-4">
+                <label className="flex items-center cursor-pointer">
+                  <div className="mr-2">Confidence Intervals:</div>
+                  <div className="relative">
+                    <input 
+                      type="checkbox" 
+                      checked={showConfidenceIntervals} 
+                      onChange={() => setShowConfidenceIntervals(!showConfidenceIntervals)} 
+                      className="sr-only"
+                    />
+                    <div className={`block w-10 h-6 rounded-full ${showConfidenceIntervals ? 'bg-blue-500' : 'bg-gray-300'}`}></div>
+                    <div className={`absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition ${showConfidenceIntervals ? 'transform translate-x-4' : ''}`}></div>
+                  </div>
+                </label>
+                
+                <label className="flex items-center cursor-pointer">
+                  <div className="mr-2">Scenarios:</div>
+                  <div className="relative">
+                    <input 
+                      type="checkbox" 
+                      checked={showScenarios} 
+                      onChange={() => setShowScenarios(!showScenarios)} 
+                      className="sr-only"
+                    />
+                    <div className={`block w-10 h-6 rounded-full ${showScenarios ? 'bg-blue-500' : 'bg-gray-300'}`}></div>
+                    <div className={`absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition ${showScenarios ? 'transform translate-x-4' : ''}`}></div>
+                  </div>
+                </label>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // Revenue Forecast Chart with Scenarios
+  const renderRevenueForecast = () => {
+    const filteredData = getFilteredData();
+    
+    if (isLoading || filteredData.length === 0 || forecastData.length === 0) {
+      return (
+        <div className="bg-white rounded-lg shadow p-4 mb-6">
+          <h2 className="text-lg font-semibold mb-4">Revenue Forecast</h2>
+          <div className="h-80 animate-pulse bg-gray-200 rounded"></div>
+        </div>
+      );
+    }
+    
+    // Combine historical and forecast data
+    const combinedData = [...filteredData, ...forecastData];
+    
+    // Add forecast start reference line position
+    const forecastStartIndex = filteredData.length - 1;
+    
+    return (
+      <div className="bg-white rounded-lg shadow p-4 mb-6">
+        <h2 className="text-lg font-semibold mb-4">Revenue Forecast</h2>
+        <div className="h-80">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={combinedData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="month" />
+              <YAxis tickFormatter={formatNumber} />
+              <Tooltip formatter={(value) => formatNumber(value)} />
+              <Legend />
+              <Line 
+                type="monotone" 
+                dataKey="revenue" 
+                name="Historical Revenue" 
+                stroke="#8884d8" 
+                strokeWidth={2}
+                dot={false}
+              />
+              <Line 
+                type="monotone" 
+                dataKey="forecastRevenue" 
+                name="Base Forecast" 
+                stroke="#82ca9d" 
+                strokeWidth={2}
+                dot={false}
+              />
+              {showScenarios && (
+                <>
+                  <Line 
+                    type="monotone" 
+                    dataKey="optimisticForecast" 
+                    name="Optimistic Scenario" 
+                    stroke="#ffc658" 
+                    strokeDasharray="3 3"
+                    dot={false}
+                  />
+                  <Line 
+                    type="monotone" 
+                    dataKey="pessimisticForecast" 
+                    name="Pessimistic Scenario" 
+                    stroke="#ff8042" 
+                    strokeDasharray="3 3"
+                    dot={false}
+                  />
+                </>
+              )}
+              <ReferenceLine x={combinedData[forecastStartIndex]?.month} stroke="#666" label="Forecast Start" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    );
+  };
+  
+  // Forecast Confidence Intervals
+  const renderConfidenceIntervals = () => {
+    if (isLoading || forecastData.length === 0) {
+      return (
+        <div className="bg-white rounded-lg shadow p-4 mb-6">
+          <h2 className="text-lg font-semibold mb-4">Forecast Confidence</h2>
+          <div className="h-64 animate-pulse bg-gray-200 rounded"></div>
+        </div>
+      );
+    }
+    
+    return (
+      <div className="bg-white rounded-lg shadow p-4 mb-6">
+        <h2 className="text-lg font-semibold mb-4">Forecast Confidence</h2>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={forecastData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="month" />
+              <YAxis tickFormatter={formatNumber} />
+              <Tooltip formatter={(value) => formatNumber(value)} />
+              <Legend />
+              {showConfidenceIntervals && (
+                <>
+                  <Area 
+                    type="monotone" 
+                    dataKey="upperBound" 
+                    name="Upper Bound (95%)" 
+                    fill="#82ca9d" 
+                    stroke="#82ca9d" 
+                    fillOpacity={0.3}
+                  />
+                  <Area 
+                    type="monotone" 
+                    dataKey="lowerBound" 
+                    name="Lower Bound (95%)" 
+                    fill="#8884d8" 
+                    stroke="#8884d8" 
+                    fillOpacity={0.3}
+                  />
+                </>
+              )}
+              <Line 
+                type="monotone" 
+                dataKey="forecastRevenue" 
+                name="Forecast" 
+                stroke="#8884d8" 
+                strokeWidth={2}
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    );
+  };
+  
+  // Model Performance Comparison
+  const renderModelPerformance = () => {
+    // Sample model performance data
+    const modelPerformanceData = [
+      { model: 'ARIMA', rmse: 3.2, mae: 2.8, accuracy: 91.5 },
+      { model: 'SARIMA', rmse: 2.7, mae: 2.3, accuracy: 93.4 },
+      { model: 'ExpSmoothing', rmse: 4.1, mae: 3.6, accuracy: 89.2 },
+      { model: 'RandomForest', rmse: 2.1, mae: 1.8, accuracy: 95.6 },
+      { model: 'XGBoost', rmse: 1.8, mae: 1.5, accuracy: 96.7 }
+    ];
+    
+    return (
+      <div className="bg-white rounded-lg shadow p-4 mb-6">
+        <h2 className="text-lg font-semibold mb-4">Model Performance</h2>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={modelPerformanceData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="model" />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Bar dataKey="rmse" name="RMSE" fill="#8884d8" />
+              <Bar dataKey="mae" name="MAE" fill="#82ca9d" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    );
+  };
+  
+  // Feature Importance
+  const renderFeatureImportance = () => {
+    // Sample feature importance data
+    const featureData = [
+      { feature: 'Transaction Volume', importance: 27.5 },
+      { feature: 'Active Customers', importance: 18.3 },
+      { feature: 'Marketing Spend', importance: 14.7 },
+      { feature: 'Business Mix', importance: 12.9 },
+      { feature: 'Interest Rate', importance: 10.6 },
+      { feature: 'Seasonal Effect', importance: 9.2 },
+      { feature: 'Competitive Index', importance: 6.8 }
+    ].sort((a, b) => b.importance - a.importance);
+    
+    return (
+      <div className="bg-white rounded-lg shadow p-4 mb-6">
+        <h2 className="text-lg font-semibold mb-4">Feature Importance</h2>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={featureData} layout="vertical">
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis type="number" />
+              <YAxis dataKey="feature" type="category" width={150} />
+              <Tooltip formatter={(value) => `${value}%`} />
+              <Legend />
+              <Bar dataKey="importance" name="Importance %" fill="#8884d8" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    );
+  };
+  
+  // Main render based on current view mode
+  const renderContent = () => {
+    switch (viewMode) {
+      case 'overview':
+        return (
+          <>
+            {renderRevenueChart()}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {renderCorridorAnalysis()}
+              {renderUnitEconomics()}
+            </div>
+          </>
+        );
+      case 'customers':
+        return (
+          <>
+            {renderCustomerMetrics()}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {renderCorridorAnalysis()}
+              {renderUnitEconomics()}
+            </div>
+          </>
+        );
+      case 'economics':
+        return (
+          <>
+            {renderUnitEconomics()}
+            {renderRevenueChart()}
+          </>
+        );
+      case 'forecasts':
+        return (
+          <>
+            {renderRevenueForecast()}
+            {renderConfidenceIntervals()}
+          </>
+        );
+      case 'models':
+        return (
+          <>
+            {renderModelPerformance()}
+            {renderFeatureImportance()}
+          </>
+        );
+      default:
+        return renderRevenueChart();
+    }
+  };
+
+  // Top section actions
+  const renderHeaderActions = () => {
+    return (
+      <div className="flex flex-wrap justify-between items-center mb-6">
+        <h1 className="text-2xl font-bold">Wise Strategic Finance Dashboard</h1>
+        <div className="flex space-x-2 mt-2 md:mt-0">
+          <button className="bg-gray-200 px-3 py-1 rounded text-sm">
+            Export PDF
+          </button>
+          <button className="bg-gray-200 px-3 py-1 rounded text-sm">
+            Download Data
+          </button>
+          <button className="bg-blue-500 text-white px-3 py-1 rounded text-sm">
+            Share
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // Combine all components for the main dashboard
+  return (
+    <div className="bg-gray-100 p-4 md:p-6 min-h-screen">
+      {renderHeaderActions()}
+      {renderKPICards()}
+      {renderControls()}
+      {renderContent()}
+      <div className="text-xs text-gray-500 mt-4">
+        Last updated: March 18, 2025 • Data source: Wise Financial Forecasting Models
+      </div>
+    </div>
+  );
+};
+
+// Helper function to generate sample data
+const generateSampleData = () => {
+  const data = [];
+  let revenue = 2000000;
+  let transactionVolume = 300000000;
+  let takeRate = 0.65;
+  let customers = 1500000;
+  let activeCustomers = 1200000;
+  let ltv = 180;
+  let cac = 25;
+  let ltvCacRatio = ltv / cac;
+  
+  // Corridor volumes
+  let corridorGBPEUR = transactionVolume * 0.18;
+  let corridorEURGBP = transactionVolume * 0.15;
+  let corridorUSDEUR = transactionVolume * 0.12;
+  let corridorGBPUSD = transactionVolume * 0.14;
+  let corridorOther = transactionVolume * 0.41;
+  
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+  
+  for (let i = 0; i < 36; i++) {
+    const year = 2020 + Math.floor(i / 12);
+    const monthIndex = i % 12;
+    const month = `${months[monthIndex]} ${year}`;
+    
+    // Add seasonality (Q4 higher, Q1 lower)
+    const quarter = Math.floor(monthIndex / 3);
+    const seasonality = quarter === 3 ? 1.15 : 
+                        quarter === 0 ? 0.9 : 
+                        1 + (monthIndex % 3) * 0.02;
+    
+    // Add some randomness
+    const randomFactor = 0.95 + Math.random() * 0.1;
+    
+    // Apply growth, seasonality and randomness
+    revenue = revenue * 1.02 * seasonality * randomFactor;
+    transactionVolume = transactionVolume * 1.03 * seasonality * randomFactor;
+    
+    // Gradually reduce take rate to simulate competition
+    takeRate = Math.max(0.35, takeRate - 0.005);
+    
+    // Update customer metrics
+    customers = customers * 1.015 * randomFactor;
+    activeCustomers = customers * (0.8 + i * 0.002);
+    
+    // Improve unit economics
+    cac = Math.max(17, cac - 0.15);
+    ltv = ltv + 5;
+    ltvCacRatio = ltv / cac;
+    
+    // Update corridor volumes
+    corridorGBPEUR = corridorGBPEUR * 1.025 * seasonality * randomFactor;
+    corridorEURGBP = corridorEURGBP * 1.02 * seasonality * randomFactor;
+    corridorUSDEUR = corridorUSDEUR * 1.03 * seasonality * randomFactor;
+    corridorGBPUSD = corridorGBPUSD * 1.022 * seasonality * randomFactor;
+    corridorOther = corridorOther * 1.035 * seasonality * randomFactor;
+    
+    data.push({
+      month,
+      revenue,
+      transactionVolume,
+      takeRate,
+      customers,
+      activeCustomers,
+      ltv,
+      cac,
+      ltvCacRatio,
+      corridorGBPEUR,
+      corridorEURGBP,
+      corridorUSDEUR,
+      corridorGBPUSD,
+      corridorOther
+    });
+  }
+  
+  return data;
+};
+
+// Helper function to generate forecast data
+const generateForecastData = (lastDataPoint) => {
+  if (!lastDataPoint) return [];
+  
+  const forecastData = [];
+  
+  // Start with the last data point values
+  let revenue = lastDataPoint.revenue || 5000000;
+  let growth = 3.5; // Growth rate assumption
+  
+  // Get month and year from last data point
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+  
+  // Parse the last month (e.g., "Dec 2023")
+  const lastMonth = lastDataPoint.month || "Dec 2023";
+  const parts = lastMonth.split(' ');
+  let monthName = parts[0];
+  let year = parseInt(parts[1]) || 2023;
+  
+  // Get month index
+  let monthIndex = months.indexOf(monthName);
+  
+  // Generate 12 months of forecast data
+  for (let i = 0; i < 12; i++) {
+    // Increment month
+    monthIndex = (monthIndex + 1) % 12;
+    if (monthIndex === 0) year++; // New year
+    
+    // Create month string
+    const month = `${months[monthIndex]} ${year}`;
+    
+    // Add seasonality (Q4 higher, Q1 lower)
+    const quarter = Math.floor(monthIndex / 3);
+    const seasonality = quarter === 3 ? 1.15 : 
+                        quarter === 0 ? 0.9 : 
+                        1 + (monthIndex % 3) * 0.02;
+    
+    // Calculate base forecast with seasonality
+    revenue = revenue * (1 + growth / 100) * seasonality;
+    
+    // Add scenario variations
+    const optimisticForecast = revenue * 1.15;
+    const pessimisticForecast = revenue * 0.85;
+    
+    // Add confidence intervals
+    const upperBound = revenue * 1.10;
+    const lowerBound = revenue * 0.90;
+    
+    // Add forecast data point
+    forecastData.push({
+      month,
+      forecastRevenue: revenue,
+      optimisticForecast,
+      pessimisticForecast,
+      upperBound,
+      lowerBound,
+      // Keep these null for historical data series
+      revenue: null,
+      transactionVolume: null,
+    });
+  }
+  
+  return forecastData;
+};
+
+export default WiseStrategicDashboard;
